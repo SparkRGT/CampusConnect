@@ -23,6 +23,7 @@ import {
   DataParsingError,
   HttpError,
   NetworkConnectionError,
+  errorLogger,
   fetchAnnouncements,
   getUserFriendlyErrorMessage,
 } from '../src/services';
@@ -36,6 +37,7 @@ export default function HomeScreen() {
   );
   const [currentError, setCurrentError] = useState<ErrorLogEntry | null>(null);
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [errorLogCount, setErrorLogCount] = useState<number>(0);
 
   /**
    * Operación de red con flujo estructurado obligatorio try / catch / finally:
@@ -46,7 +48,7 @@ export default function HomeScreen() {
    * 4. Validar response.ok (dentro de fetchAnnouncements).
    * 5. Procesar los datos y actualizar lista.
    * 6. Capturar los errores mediante catch.
-   * 7. Registrar el error técnicamente (diagnóstico).
+   * 7. Registrar el error técnicamente mediante errorLogger (sin datos personales).
    * 8. Mostrar un mensaje comprensible al usuario.
    * 9. Desactivar el indicador de carga en bloque finally.
    */
@@ -65,64 +67,51 @@ export default function HomeScreen() {
       setStatus('success');
     } catch (error: unknown) {
       // PASO 6: Capturar los errores en catch
-      // PASO 7: Registrar el error técnicamente sin datos personales
-      const timestamp = new Date().toISOString();
       const userMessage = getUserFriendlyErrorMessage(error);
+      let loggedEntry: ErrorLogEntry;
 
-      let logEntry: ErrorLogEntry;
-
+      // PASO 7: Registrar el error técnicamente mediante ErrorLoggerService
       if (error instanceof HttpError) {
-        logEntry = {
-          id: `http-err-${Date.now()}`,
-          timestamp,
+        loggedEntry = errorLogger.log({
           errorType: 'HTTP_ERROR',
           statusCode: error.statusCode,
-          technicalMessage: `HTTP ${error.statusCode} (${error.statusText}) en endpoint: ${error.endpoint}`,
+          technicalMessage: `HTTP ${error.statusCode} (${error.statusText}) en ${error.endpoint}`,
           userFriendlyMessage: userMessage,
-          context: 'Petición GET para consulta de avisos institucionales',
+          context: 'Petición GET de avisos académicos institucionales',
           endpoint: error.endpoint,
-        };
+        });
       } else if (error instanceof NetworkConnectionError) {
-        logEntry = {
-          id: `net-err-${Date.now()}`,
-          timestamp,
+        loggedEntry = errorLogger.log({
           errorType: error.errorType,
           technicalMessage: error.message,
           userFriendlyMessage: userMessage,
-          context: 'Comprobación de conectividad y timeout de red',
+          context: 'Comprobación de conectividad física y timeout de red',
           endpoint: error.endpoint,
-        };
+        });
       } else if (error instanceof DataParsingError) {
-        logEntry = {
-          id: `parse-err-${Date.now()}`,
-          timestamp,
+        loggedEntry = errorLogger.log({
           errorType: 'PARSING_ERROR',
           technicalMessage: error.message,
           userFriendlyMessage: userMessage,
-          context: 'Transformación de carga útil JSON a modelo de avisos',
+          context: 'Transformación y deserialización JSON de avisos',
           endpoint: error.endpoint,
-        };
+        });
       } else {
         const genericErr = error as Error;
-        logEntry = {
-          id: `unk-err-${Date.now()}`,
-          timestamp,
+        loggedEntry = errorLogger.log({
           errorType: 'UNKNOWN_ERROR',
           technicalMessage: genericErr?.message || 'Error no clasificado',
           userFriendlyMessage: userMessage,
-          context: 'Excepción no anticipada en flujo de avisos',
+          context: 'Excepción imprevista en ciclo de vida de consulta',
           endpoint: targetEndpoint,
-        };
+        });
       }
 
-      // Registro técnico en consola de desarrollo
-      console.warn(
-        `[CampusConnect:Error] Tipo: ${logEntry.errorType} | Código: ${logEntry.statusCode ?? 'N/A'} | Técnico: ${logEntry.technicalMessage}`
-      );
+      setErrorLogCount(errorLogger.count());
 
       // PASO 8: Mostrar mensaje comprensible al usuario en la interfaz
       setAnnouncements([]);
-      setCurrentError(logEntry);
+      setCurrentError(loggedEntry);
       setStatus('error');
     } finally {
       // PASO 9: Desactivar el indicador de carga / pull-to-refresh en finally
@@ -229,8 +218,8 @@ export default function HomeScreen() {
         <View style={styles.controlsSection}>
           <Text style={styles.sectionTitle}>Panel de Consultas y Pruebas</Text>
           <Text style={styles.sectionSubtitle}>
-            Demostración de los 9 pasos del flujo try/catch/finally con endpoints
-            reales y controlados.
+            Demostración de los 9 pasos del flujo try/catch/finally y trazabilidad
+            mediante ErrorLogger local.
           </Text>
 
           <View style={styles.buttonRow}>
@@ -267,12 +256,20 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
-          {/* Información del endpoint activo */}
-          <View style={styles.endpointInfoBox}>
-            <Text style={styles.endpointLabel}>Endpoint Activo:</Text>
-            <Text style={styles.endpointValue} numberOfLines={1}>
-              {activeEndpoint}
-            </Text>
+          {/* Información del endpoint activo y métricas de error */}
+          <View style={styles.metaRow}>
+            <View style={styles.endpointInfoBox}>
+              <Text style={styles.endpointLabel}>Endpoint Activo:</Text>
+              <Text style={styles.endpointValue} numberOfLines={1}>
+                {activeEndpoint}
+              </Text>
+            </View>
+            <View style={styles.logsAuditBadge}>
+              <Text style={styles.logsAuditLabel}>Logs Locales:</Text>
+              <Text style={styles.logsAuditCount}>
+                {errorLogCount} {errorLogCount === 1 ? 'error' : 'errores'}
+              </Text>
+            </View>
           </View>
         </View>
 
@@ -301,7 +298,7 @@ export default function HomeScreen() {
             <ErrorMessage
               userMessage={currentError.userFriendlyMessage}
               statusCode={currentError.statusCode}
-              technicalDetails={`[${currentError.errorType}] ${currentError.technicalMessage}\nContexto: ${currentError.context}\nTimestamp: ${currentError.timestamp}`}
+              technicalDetails={`[${currentError.errorType}] ${currentError.technicalMessage}\nContexto: ${currentError.context}\nTimestamp: ${currentError.timestamp}\nID de Registro: ${currentError.id}`}
               onRetry={handleRetry}
               isRetrying={false}
             />
@@ -483,8 +480,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
-  endpointInfoBox: {
+  metaRow: {
     marginTop: 12,
+    gap: 8,
+  },
+  endpointInfoBox: {
     backgroundColor: '#F8FAFC',
     borderRadius: 8,
     padding: 10,
@@ -502,6 +502,25 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#0284C7',
     fontFamily: 'monospace',
+  },
+  logsAuditBadge: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  logsAuditLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  logsAuditCount: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#334155',
   },
   contentSection: {
     marginTop: 16,
