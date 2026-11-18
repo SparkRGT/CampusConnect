@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Pressable,
   RefreshControl,
@@ -19,97 +19,117 @@ import {
   ErrorLogEntry,
   RequestStatus,
 } from '../src/models/announcement.model';
-
-/**
- * Datos iniciales de demostración para visualización de la interfaz en FASE 4
- */
-const MOCK_PREVIEW_ANNOUNCEMENTS: Announcement[] = [
-  {
-    id: 1,
-    title: 'Inicio del Periodo Académico y Registro de Asignaturas',
-    body: 'Se informa a todos los estudiantes que el proceso de matriculación ordinaria para el nuevo ciclo académico se encuentra habilitado en el portal institucional.',
-    category: 'Académico',
-    formattedDate: '18 Nov 2026',
-  },
-  {
-    id: 2,
-    title: 'Feria Universitaria de Innovación y Proyectos Tecnológicos',
-    body: 'Invitamos a la comunidad universitaria a inscribir sus proyectos tecnológicos y de desarrollo móvil en la feria anual de la facultad.',
-    category: 'Evento',
-    formattedDate: '19 Nov 2026',
-  },
-  {
-    id: 3,
-    title: 'Mantenimiento Programado de la Plataforma Virtual',
-    body: 'Los servidores institucionales entrarán en mantenimiento preventivo este fin de semana de 00:00 a 04:00 horas. Tome las debidas precauciones.',
-    category: 'Institucional',
-    formattedDate: '20 Nov 2026',
-  },
-];
+import {
+  HttpError,
+  NetworkConnectionError,
+  fetchAnnouncements,
+} from '../src/services';
 
 export default function HomeScreen() {
   // Estados de interfaz y ciclo de vida de peticiones
   const [status, setStatus] = useState<RequestStatus>('idle');
-  const [announcements, setAnnouncements] = useState<Announcement[]>(
-    MOCK_PREVIEW_ANNOUNCEMENTS
-  );
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [activeEndpoint, setActiveEndpoint] = useState<string>(
     API_CONFIG.ENDPOINTS.ANNOUNCEMENTS
   );
   const [currentError, setCurrentError] = useState<ErrorLogEntry | null>(null);
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
-  // Manejador temporal de UI para cargar datos de prueba
-  const handleLoadSuccessDemo = () => {
+  /**
+   * Operación central de consulta con try / catch / finally
+   */
+  const executeFetch = useCallback(async (targetEndpoint: string) => {
+    // 1. Activar indicador de carga y registrar endpoint
     setStatus('loading');
+    setActiveEndpoint(targetEndpoint);
+
+    // 2. Limpiar errores anteriores
     setCurrentError(null);
-    setActiveEndpoint(API_CONFIG.ENDPOINTS.ANNOUNCEMENTS);
 
-    setTimeout(() => {
-      setAnnouncements(MOCK_PREVIEW_ANNOUNCEMENTS);
+    try {
+      // 3. Ejecutar la petición HTTP y procesar datos
+      const data = await fetchAnnouncements(targetEndpoint);
+      setAnnouncements(data);
       setStatus('success');
-    }, 800);
-  };
+    } catch (err: unknown) {
+      // 4. Captura de errores y clasificación técnica vs usuario
+      let errorEntry: ErrorLogEntry;
 
-  // Manejador temporal de UI para simular visualmente error 404
-  const handleSimulateErrorDemo = () => {
-    setStatus('loading');
-    setActiveEndpoint(API_CONFIG.ENDPOINTS.INVALID_TEST);
+      if (err instanceof HttpError) {
+        errorEntry = {
+          id: `err-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          errorType: 'HTTP_ERROR',
+          statusCode: err.statusCode,
+          technicalMessage: `HTTP ${err.statusCode}: ${err.statusText} en ${err.endpoint}`,
+          userFriendlyMessage:
+            err.statusCode === 404
+              ? 'El recurso solicitado no fue encontrado en el servidor (HTTP 404). Verifica el endpoint institucional.'
+              : `Ocurrió una respuesta de error del servidor (HTTP ${err.statusCode}). Inténtalo más tarde.`,
+          context: 'Consulta de comunicados en CampusConnect',
+          endpoint: err.endpoint,
+        };
+      } else if (err instanceof NetworkConnectionError) {
+        errorEntry = {
+          id: `err-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          errorType: 'NETWORK_ERROR',
+          technicalMessage: err.message,
+          userFriendlyMessage:
+            'No fue posible comunicarse con el servidor institucional. Comprueba tu conexión de red o el estado del servicio.',
+          context: 'Fallo de conectividad / red / timeout',
+          endpoint: err.endpoint,
+        };
+      } else {
+        const errorObj = err as Error;
+        errorEntry = {
+          id: `err-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          errorType: 'PARSING_ERROR',
+          technicalMessage: errorObj?.message || 'Error no identificado',
+          userFriendlyMessage:
+            'Hubo un problema al procesar la información de los avisos. Por favor contacta al soporte técnico.',
+          context: 'Procesamiento de datos JSON',
+          endpoint: targetEndpoint,
+        };
+      }
 
-    setTimeout(() => {
       setAnnouncements([]);
-      setCurrentError({
-        id: 'err-preview-404',
-        timestamp: new Date().toISOString(),
-        errorType: 'HTTP_ERROR',
-        statusCode: 404,
-        technicalMessage: 'HTTP 404 Not Found at /endpoint-inexistente',
-        userFriendlyMessage:
-          'No pudimos encontrar el recurso solicitado en el servidor universitario (HTTP 404). Verifica la dirección o inténtalo más tarde.',
-        context: 'Simulación controlada de laboratorio (FASE 4)',
-        endpoint: API_CONFIG.ENDPOINTS.INVALID_TEST,
-      });
+      setCurrentError(errorEntry);
       setStatus('error');
-    }, 800);
+    } finally {
+      // 5. Finalizar estado de refresco en bloque finally
+      setRefreshing(false);
+    }
+  }, []);
+
+  // Carga inicial al montar la aplicación
+  useEffect(() => {
+    executeFetch(API_CONFIG.ENDPOINTS.ANNOUNCEMENTS);
+  }, [executeFetch]);
+
+  // Manejador para botón "Consultar Avisos (200 OK)"
+  const handleLoadSuccess = () => {
+    executeFetch(API_CONFIG.ENDPOINTS.ANNOUNCEMENTS);
   };
 
-  // Manejador de reintento: vuelve a ejecutar la última operación con su endpoint
+  // Manejador para botón "Simular Error (HTTP 404)"
+  const handleSimulateError = () => {
+    executeFetch(API_CONFIG.ENDPOINTS.INVALID_TEST);
+  };
+
+  // Manejador de reintento: repite la última operación usando su endpoint original
   const handleRetry = () => {
-    if (activeEndpoint === API_CONFIG.ENDPOINTS.INVALID_TEST) {
-      handleSimulateErrorDemo();
-    } else {
-      handleLoadSuccessDemo();
-    }
+    executeFetch(activeEndpoint);
   };
 
   // Pull-to-refresh
   const onRefresh = () => {
     setRefreshing(true);
-    handleRetry();
-    setTimeout(() => setRefreshing(false), 800);
+    executeFetch(activeEndpoint);
   };
 
-  // Helper para el badge de estado
+  // Helper para el badge de estado visual
   const getStatusBadge = () => {
     switch (status) {
       case 'loading':
@@ -119,7 +139,7 @@ export default function HomeScreen() {
       case 'success':
         return { label: 'En línea • Sincronizado', color: '#16A34A', bg: '#DCFCE7' };
       default:
-        return { label: 'Listo para consultar', color: '#2563EB', bg: '#DBEAFE' };
+        return { label: 'Inactivo', color: '#64748B', bg: '#F1F5F9' };
     }
   };
 
@@ -167,7 +187,7 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          {/* Tarjeta de información académica */}
+          {/* Tarjeta académica */}
           <View style={styles.academicCard}>
             <Text style={styles.academicSubject}>
               Aplicaciones Móviles Híbridas • Práctica 4.3
@@ -178,12 +198,12 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* Panel de Control de Pruebas y Acciones */}
+        {/* Panel de Control de Consultas y Pruebas */}
         <View style={styles.controlsSection}>
           <Text style={styles.sectionTitle}>Panel de Consultas y Pruebas</Text>
           <Text style={styles.sectionSubtitle}>
-            Ejecuta consultas válidas o simula fallos controlados para verificar
-            la trazabilidad de errores.
+            Consulta la API pública JSONPlaceholder (/posts) o simula un fallo
+            404 con un endpoint inexistente.
           </Text>
 
           <View style={styles.buttonRow}>
@@ -194,7 +214,7 @@ export default function HomeScreen() {
                 styles.successButton,
                 pressed && styles.buttonPressed,
               ]}
-              onPress={handleLoadSuccessDemo}
+              onPress={handleLoadSuccess}
               accessibilityRole="button"
               accessibilityLabel="Consultar avisos académicos válidos"
             >
@@ -210,9 +230,9 @@ export default function HomeScreen() {
                 styles.errorButton,
                 pressed && styles.buttonPressed,
               ]}
-              onPress={handleSimulateErrorDemo}
+              onPress={handleSimulateError}
               accessibilityRole="button"
-              accessibilityLabel="Simular error HTTP 404 en endpoint no existente"
+              accessibilityLabel="Simular error HTTP 404 en endpoint inexistente"
             >
               <Text style={styles.errorButtonText}>
                 🧪 Simular Error (HTTP 404)
@@ -246,7 +266,7 @@ export default function HomeScreen() {
           {status === 'loading' && (
             <LoadingIndicator
               message="Consultando avisos en el servidor..."
-              subMessage={`Endpoint: ${activeEndpoint}`}
+              subMessage={`Conectando con: ${activeEndpoint}`}
             />
           )}
 
