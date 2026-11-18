@@ -20,13 +20,15 @@ import {
   RequestStatus,
 } from '../src/models/announcement.model';
 import {
+  DataParsingError,
   HttpError,
   NetworkConnectionError,
   fetchAnnouncements,
+  getUserFriendlyErrorMessage,
 } from '../src/services';
 
 export default function HomeScreen() {
-  // Estados de interfaz y ciclo de vida de peticiones
+  // Estados reactivos de la aplicación
   const [status, setStatus] = useState<RequestStatus>('idle');
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [activeEndpoint, setActiveEndpoint] = useState<string>(
@@ -36,69 +38,94 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
   /**
-   * Operación central de consulta con try / catch / finally
+   * Operación de red con flujo estructurado obligatorio try / catch / finally:
+   *
+   * 1. Activar indicador de carga.
+   * 2. Limpiar errores anteriores.
+   * 3. Ejecutar la petición HTTP.
+   * 4. Validar response.ok (dentro de fetchAnnouncements).
+   * 5. Procesar los datos y actualizar lista.
+   * 6. Capturar los errores mediante catch.
+   * 7. Registrar el error técnicamente (diagnóstico).
+   * 8. Mostrar un mensaje comprensible al usuario.
+   * 9. Desactivar el indicador de carga en bloque finally.
    */
   const executeFetch = useCallback(async (targetEndpoint: string) => {
-    // 1. Activar indicador de carga y registrar endpoint
+    // PASO 1: Activar el indicador de carga
     setStatus('loading');
     setActiveEndpoint(targetEndpoint);
 
-    // 2. Limpiar errores anteriores
+    // PASO 2: Limpiar errores anteriores
     setCurrentError(null);
 
     try {
-      // 3. Ejecutar la petición HTTP y procesar datos
+      // PASOS 3, 4 y 5: Ejecutar petición HTTP, validar response.ok y procesar datos
       const data = await fetchAnnouncements(targetEndpoint);
       setAnnouncements(data);
       setStatus('success');
-    } catch (err: unknown) {
-      // 4. Captura de errores y clasificación técnica vs usuario
-      let errorEntry: ErrorLogEntry;
+    } catch (error: unknown) {
+      // PASO 6: Capturar los errores en catch
+      // PASO 7: Registrar el error técnicamente sin datos personales
+      const timestamp = new Date().toISOString();
+      const userMessage = getUserFriendlyErrorMessage(error);
 
-      if (err instanceof HttpError) {
-        errorEntry = {
-          id: `err-${Date.now()}`,
-          timestamp: new Date().toISOString(),
+      let logEntry: ErrorLogEntry;
+
+      if (error instanceof HttpError) {
+        logEntry = {
+          id: `http-err-${Date.now()}`,
+          timestamp,
           errorType: 'HTTP_ERROR',
-          statusCode: err.statusCode,
-          technicalMessage: `HTTP ${err.statusCode}: ${err.statusText} en ${err.endpoint}`,
-          userFriendlyMessage:
-            err.statusCode === 404
-              ? 'El recurso solicitado no fue encontrado en el servidor (HTTP 404). Verifica el endpoint institucional.'
-              : `Ocurrió una respuesta de error del servidor (HTTP ${err.statusCode}). Inténtalo más tarde.`,
-          context: 'Consulta de comunicados en CampusConnect',
-          endpoint: err.endpoint,
+          statusCode: error.statusCode,
+          technicalMessage: `HTTP ${error.statusCode} (${error.statusText}) en endpoint: ${error.endpoint}`,
+          userFriendlyMessage: userMessage,
+          context: 'Petición GET para consulta de avisos institucionales',
+          endpoint: error.endpoint,
         };
-      } else if (err instanceof NetworkConnectionError) {
-        errorEntry = {
-          id: `err-${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          errorType: 'NETWORK_ERROR',
-          technicalMessage: err.message,
-          userFriendlyMessage:
-            'No fue posible comunicarse con el servidor institucional. Comprueba tu conexión de red o el estado del servicio.',
-          context: 'Fallo de conectividad / red / timeout',
-          endpoint: err.endpoint,
+      } else if (error instanceof NetworkConnectionError) {
+        logEntry = {
+          id: `net-err-${Date.now()}`,
+          timestamp,
+          errorType: error.errorType,
+          technicalMessage: error.message,
+          userFriendlyMessage: userMessage,
+          context: 'Comprobación de conectividad y timeout de red',
+          endpoint: error.endpoint,
+        };
+      } else if (error instanceof DataParsingError) {
+        logEntry = {
+          id: `parse-err-${Date.now()}`,
+          timestamp,
+          errorType: 'PARSING_ERROR',
+          technicalMessage: error.message,
+          userFriendlyMessage: userMessage,
+          context: 'Transformación de carga útil JSON a modelo de avisos',
+          endpoint: error.endpoint,
         };
       } else {
-        const errorObj = err as Error;
-        errorEntry = {
-          id: `err-${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          errorType: 'PARSING_ERROR',
-          technicalMessage: errorObj?.message || 'Error no identificado',
-          userFriendlyMessage:
-            'Hubo un problema al procesar la información de los avisos. Por favor contacta al soporte técnico.',
-          context: 'Procesamiento de datos JSON',
+        const genericErr = error as Error;
+        logEntry = {
+          id: `unk-err-${Date.now()}`,
+          timestamp,
+          errorType: 'UNKNOWN_ERROR',
+          technicalMessage: genericErr?.message || 'Error no clasificado',
+          userFriendlyMessage: userMessage,
+          context: 'Excepción no anticipada en flujo de avisos',
           endpoint: targetEndpoint,
         };
       }
 
+      // Registro técnico en consola de desarrollo
+      console.warn(
+        `[CampusConnect:Error] Tipo: ${logEntry.errorType} | Código: ${logEntry.statusCode ?? 'N/A'} | Técnico: ${logEntry.technicalMessage}`
+      );
+
+      // PASO 8: Mostrar mensaje comprensible al usuario en la interfaz
       setAnnouncements([]);
-      setCurrentError(errorEntry);
+      setCurrentError(logEntry);
       setStatus('error');
     } finally {
-      // 5. Finalizar estado de refresco en bloque finally
+      // PASO 9: Desactivar el indicador de carga / pull-to-refresh en finally
       setRefreshing(false);
     }
   }, []);
@@ -108,17 +135,17 @@ export default function HomeScreen() {
     executeFetch(API_CONFIG.ENDPOINTS.ANNOUNCEMENTS);
   }, [executeFetch]);
 
-  // Manejador para botón "Consultar Avisos (200 OK)"
+  // Acción: Consultar avisos válidos (200 OK)
   const handleLoadSuccess = () => {
     executeFetch(API_CONFIG.ENDPOINTS.ANNOUNCEMENTS);
   };
 
-  // Manejador para botón "Simular Error (HTTP 404)"
+  // Acción: Simular error en endpoint de laboratorio (HTTP 404)
   const handleSimulateError = () => {
     executeFetch(API_CONFIG.ENDPOINTS.INVALID_TEST);
   };
 
-  // Manejador de reintento: repite la última operación usando su endpoint original
+  // Acción: Reintentar repitiendo la última operación con su endpoint original
   const handleRetry = () => {
     executeFetch(activeEndpoint);
   };
@@ -129,7 +156,7 @@ export default function HomeScreen() {
     executeFetch(activeEndpoint);
   };
 
-  // Helper para el badge de estado visual
+  // Indicador visual de estado
   const getStatusBadge = () => {
     switch (status) {
       case 'loading':
@@ -202,8 +229,8 @@ export default function HomeScreen() {
         <View style={styles.controlsSection}>
           <Text style={styles.sectionTitle}>Panel de Consultas y Pruebas</Text>
           <Text style={styles.sectionSubtitle}>
-            Consulta la API pública JSONPlaceholder (/posts) o simula un fallo
-            404 con un endpoint inexistente.
+            Demostración de los 9 pasos del flujo try/catch/finally con endpoints
+            reales y controlados.
           </Text>
 
           <View style={styles.buttonRow}>
@@ -505,12 +532,12 @@ const styles = StyleSheet.create({
   },
   emptyStateIcon: {
     fontSize: 48,
-    marginBottom: 12,
   },
   emptyStateTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: '#1E293B',
+    marginTop: 12,
     marginBottom: 6,
   },
   emptyStateText: {

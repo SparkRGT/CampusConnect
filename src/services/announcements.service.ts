@@ -2,18 +2,21 @@
  * Servicio de Avisos Académicos para CampusConnect
  * Asignatura: Aplicaciones Móviles Híbridas - Práctica 4.3
  *
- * Responsabilidades:
- * - Consultar la API mediante Fetch API.
- * - Validar códigos de respuesta HTTP y response.ok.
- * - Procesar y formatear la información recibida (id, title, body).
- * - Distinguir errores de red, HTTP y de parseo.
+ * Taxonomía de errores diferenciados:
+ * 1. HttpError: Errores con respuesta del servidor (status codes 4xx, 5xx)
+ * 2. NetworkConnectionError: Errores de red física, conectividad o timeout
+ * 3. DataParsingError: Errores de formato o deserialización de datos
  */
 
 import { API_CONFIG } from '../constants/api';
-import { Announcement, RawPost } from '../models/announcement.model';
+import {
+  Announcement,
+  AppErrorType,
+  RawPost,
+} from '../models/announcement.model';
 
 /**
- * Categorías académicas para enriquecer la presentación de los avisos
+ * Categorías académicas para la presentación de los avisos
  */
 const CATEGORIES: Announcement['category'][] = [
   'Académico',
@@ -35,7 +38,10 @@ function getMockDateForIndex(index: number): string {
 /**
  * Transforma un post crudo de JSONPlaceholder en un anuncio académico formal
  */
-export function mapRawPostToAnnouncement(raw: RawPost, index: number): Announcement {
+export function mapRawPostToAnnouncement(
+  raw: RawPost,
+  index: number
+): Announcement {
   return {
     id: raw.id,
     title: raw.title,
@@ -46,15 +52,16 @@ export function mapRawPostToAnnouncement(raw: RawPost, index: number): Announcem
 }
 
 /**
- * Clase de error personalizada para fallos de respuesta HTTP
+ * 1. Error HTTP: Ocurre cuando el servidor responde con un código de estado fuera de 200-299.
  */
 export class HttpError extends Error {
+  readonly errorType: AppErrorType = 'HTTP_ERROR';
   statusCode: number;
   statusText: string;
   endpoint: string;
 
   constructor(statusCode: number, statusText: string, endpoint: string) {
-    super(`Error HTTP ${statusCode}: ${statusText || 'Error en la petición'}`);
+    super(`Respuesta HTTP ${statusCode}: ${statusText || 'Error en la petición'}`);
     this.name = 'HttpError';
     this.statusCode = statusCode;
     this.statusText = statusText;
@@ -63,25 +70,76 @@ export class HttpError extends Error {
 }
 
 /**
- * Clase de error personalizada para fallos de conexión o timeout
+ * 2. Error de Conexión: Ocurre ante fallos de conectividad, caída de red, DNS o timeout.
  */
 export class NetworkConnectionError extends Error {
+  readonly errorType: AppErrorType;
   endpoint: string;
 
-  constructor(message: string, endpoint: string) {
+  constructor(
+    message: string,
+    endpoint: string,
+    isTimeout: boolean = false
+  ) {
     super(message);
     this.name = 'NetworkConnectionError';
+    this.errorType = isTimeout ? 'TIMEOUT_ERROR' : 'NETWORK_ERROR';
     this.endpoint = endpoint;
   }
 }
 
 /**
+ * 3. Error de Procesamiento de Datos: Ocurre cuando la respuesta no es un JSON válido o la estructura no coincide.
+ */
+export class DataParsingError extends Error {
+  readonly errorType: AppErrorType = 'PARSING_ERROR';
+  endpoint: string;
+
+  constructor(message: string, endpoint: string) {
+    super(message);
+    this.name = 'DataParsingError';
+    this.endpoint = endpoint;
+  }
+}
+
+/**
+ * Traduce cualquier tipo de error técnico a un mensaje empático y comprensible para el usuario,
+ * garantizando que NUNCA se expongan excepciones crudas o volcados de memoria al usuario final.
+ */
+export function getUserFriendlyErrorMessage(error: unknown): string {
+  if (error instanceof HttpError) {
+    switch (error.statusCode) {
+      case 404:
+        return 'El comunicado o aviso solicitado no fue encontrado en el servidor universitario (Error 404). Verifica el recurso o inténtalo más tarde.';
+      case 401:
+      case 403:
+        return 'No tienes autorización para acceder a esta sección institucional. Inicia sesión nuevamente.';
+      case 500:
+      case 502:
+      case 503:
+        return 'El servidor universitario experimentó una falla temporal. Nuestro equipo técnico está trabajando en restablecerlo.';
+      default:
+        return `Ocurrió una eventualidad con el servidor institucional (Código ${error.statusCode}). Por favor reintenta en unos instantes.`;
+    }
+  }
+
+  if (error instanceof NetworkConnectionError) {
+    if (error.errorType === 'TIMEOUT_ERROR') {
+      return 'El servidor tardó demasiado en responder (Tiempo de espera agotado). Verifica tu conexión o reintenta en breve.';
+    }
+    return 'No fue posible conectar con el servidor institucional. Verifica que tu dispositivo cuente con conexión a Internet activa.';
+  }
+
+  if (error instanceof DataParsingError) {
+    return 'Hubo una dificultad al procesar la información de los avisos recibidos. La plataforma podría estar en mantenimiento.';
+  }
+
+  return 'Ocurrió un problema inesperado al cargar los avisos. Por favor presiona "Reintentar".';
+}
+
+/**
  * Consulta la lista de avisos académicos desde el endpoint especificado
- *
- * @param endpoint URL a consultar (por defecto el endpoint válido /posts)
- * @returns Lista de anuncios mapeados
- * @throws HttpError si response.ok es false (ej: 404, 500)
- * @throws NetworkConnectionError si falla la conectividad o expira el timeout
+ * aplicando validaciones estrictas y lanzando errores tipados.
  */
 export async function fetchAnnouncements(
   endpoint: string = API_CONFIG.ENDPOINTS.ANNOUNCEMENTS
@@ -100,35 +158,36 @@ export async function fetchAnnouncements(
       signal: controller.signal,
     });
 
-    // 1. Validación de código de estado HTTP (response.ok)
+    // Validación obligatoria de response.ok
     if (!response.ok) {
       throw new HttpError(
         response.status,
-        response.statusText || 'Recurso no encontrado o no disponible',
+        response.statusText || 'Recurso no disponible',
         endpoint
       );
     }
 
-    // 2. Procesamiento y deserialización de datos
+    // Procesamiento de datos y detección de errores de parseo
     let data: unknown;
     try {
       data = await response.json();
     } catch {
-      throw new Error(
-        `Error de procesamiento: La respuesta del servidor no tiene formato JSON válido.`
+      throw new DataParsingError(
+        'La respuesta recibida no posee una sintaxis JSON válida.',
+        endpoint
       );
     }
 
-    // 3. Validación de estructura de array
     if (!Array.isArray(data)) {
-      throw new Error(
-        'Estructura de datos inválida: Se esperaba una lista de avisos.'
+      throw new DataParsingError(
+        'El formato de la respuesta no es una lista válida de avisos.',
+        endpoint
       );
     }
 
-    // 4. Mapeo estricto de campos (id, title, body)
+    // Mapeo estructurado (id, title, body)
     const announcements: Announcement[] = data
-      .slice(0, 20) // Limitamos a 20 avisos para una experiencia móvil ágil
+      .slice(0, 20)
       .map((item, index) => {
         const raw = item as RawPost;
         return mapRawPostToAnnouncement(raw, index);
@@ -136,28 +195,34 @@ export async function fetchAnnouncements(
 
     return announcements;
   } catch (error: unknown) {
-    // Si fue abortado por timeout
+    // Si la petición fue abortada por timeout
     if (error instanceof Error && error.name === 'AbortError') {
       throw new NetworkConnectionError(
-        `Tiempo de espera agotado (${API_CONFIG.TIMEOUT_MS / 1000}s) al conectar con el servidor institucional.`,
-        endpoint
+        `Tiempo de espera excedido (${API_CONFIG.TIMEOUT_MS / 1000}s) contactando el servidor.`,
+        endpoint,
+        true
       );
     }
 
-    // Si ya es HttpError o Error conocido, re-lanzar
-    if (error instanceof HttpError) {
+    // Si ya es un error tipado de nuestra taxonomía, re-lanzar
+    if (
+      error instanceof HttpError ||
+      error instanceof NetworkConnectionError ||
+      error instanceof DataParsingError
+    ) {
       throw error;
     }
 
-    // Si es un fallo de red nativo de fetch (TypeError: Network request failed)
+    // Si es un TypeError de fetch nativo (típico de desconexión / offline en React Native)
     if (error instanceof TypeError) {
       throw new NetworkConnectionError(
-        `Error de conexión: No se pudo establecer comunicación con el servidor. Revisa tu conexión a internet.`,
-        endpoint
+        `Fallo de conexión de red nativo: ${error.message}`,
+        endpoint,
+        false
       );
     }
 
-    // Cualquier otro error
+    // Errores genéricos
     throw error;
   } finally {
     clearTimeout(timeoutId);
