@@ -37,23 +37,24 @@ export default function HomeScreen() {
   );
   const [currentError, setCurrentError] = useState<ErrorLogEntry | null>(null);
   const [refreshing, setRefreshing] = useState<boolean>(false);
-  const [errorLogCount, setErrorLogCount] = useState<number>(0);
+  const [logsList, setLogsList] = useState<ErrorLogEntry[]>([]);
+  const [showLogsViewer, setShowLogsViewer] = useState<boolean>(false);
 
   /**
    * Operación de red con flujo estructurado obligatorio try / catch / finally:
    *
    * 1. Activar indicador de carga.
    * 2. Limpiar errores anteriores.
-   * 3. Ejecutar la petición HTTP.
+   * 3. Ejecutar la petición HTTP real con Fetch API.
    * 4. Validar response.ok (dentro de fetchAnnouncements).
-   * 5. Procesar los datos y actualizar lista.
+   * 5. Procesar los datos y actualizar lista de avisos.
    * 6. Capturar los errores mediante catch.
-   * 7. Registrar el error técnicamente mediante errorLogger (sin datos personales).
-   * 8. Mostrar un mensaje comprensible al usuario.
+   * 7. Registrar el error técnicamente mediante ErrorLoggerService (sin datos personales).
+   * 8. Mostrar un mensaje comprensible al usuario en la interfaz.
    * 9. Desactivar el indicador de carga en bloque finally.
    */
   const executeFetch = useCallback(async (targetEndpoint: string) => {
-    // PASO 1: Activar el indicador de carga
+    // PASO 1: Activar el indicador de carga y registrar endpoint objetivo
     setStatus('loading');
     setActiveEndpoint(targetEndpoint);
 
@@ -107,7 +108,8 @@ export default function HomeScreen() {
         });
       }
 
-      setErrorLogCount(errorLogger.count());
+      // Actualizar estado del historial de logs locales
+      setLogsList(errorLogger.getLogs());
 
       // PASO 8: Mostrar mensaje comprensible al usuario en la interfaz
       setAnnouncements([]);
@@ -119,24 +121,30 @@ export default function HomeScreen() {
     }
   }, []);
 
-  // Carga inicial al montar la aplicación
+  // Carga inicial al montar la aplicación (recuperación exitosa por defecto)
   useEffect(() => {
     executeFetch(API_CONFIG.ENDPOINTS.ANNOUNCEMENTS);
   }, [executeFetch]);
 
-  // Acción: Consultar avisos válidos (200 OK)
+  // ESCENARIO B: Consulta válida y recuperación exitosa (HTTP 200)
   const handleLoadSuccess = () => {
     executeFetch(API_CONFIG.ENDPOINTS.ANNOUNCEMENTS);
   };
 
-  // Acción: Simular error en endpoint de laboratorio (HTTP 404)
+  // ESCENARIO A: Fallo controlado en endpoint inexistente (HTTP 404)
   const handleSimulateError = () => {
     executeFetch(API_CONFIG.ENDPOINTS.INVALID_TEST);
   };
 
-  // Acción: Reintentar repitiendo la última operación con su endpoint original
+  // Botón Reintentar: repite la última operación usando estrictamente su endpoint original
   const handleRetry = () => {
     executeFetch(activeEndpoint);
+  };
+
+  // Limpiar historial de auditoría de logs
+  const handleClearLogs = () => {
+    errorLogger.clearLogs();
+    setLogsList([]);
   };
 
   // Pull-to-refresh
@@ -151,9 +159,9 @@ export default function HomeScreen() {
       case 'loading':
         return { label: 'Consultando...', color: '#D97706', bg: '#FEF3C7' };
       case 'error':
-        return { label: 'Error detectado', color: '#DC2626', bg: '#FEE2E2' };
+        return { label: 'Error detectado (404)', color: '#DC2626', bg: '#FEE2E2' };
       case 'success':
-        return { label: 'En línea • Sincronizado', color: '#16A34A', bg: '#DCFCE7' };
+        return { label: 'En línea • Sincronizado (200 OK)', color: '#16A34A', bg: '#DCFCE7' };
       default:
         return { label: 'Inactivo', color: '#64748B', bg: '#F1F5F9' };
     }
@@ -214,16 +222,16 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* Panel de Control de Consultas y Pruebas */}
+        {/* Panel de Control de Escenarios Obligatorios */}
         <View style={styles.controlsSection}>
-          <Text style={styles.sectionTitle}>Panel de Consultas y Pruebas</Text>
+          <Text style={styles.sectionTitle}>Escenarios de Laboratorio 4.3</Text>
           <Text style={styles.sectionSubtitle}>
-            Demostración de los 9 pasos del flujo try/catch/finally y trazabilidad
-            mediante ErrorLogger local.
+            Prueba el fallo controlado en endpoint inexistente o ejecuta la
+            recuperación con el endpoint válido.
           </Text>
 
           <View style={styles.buttonRow}>
-            {/* Botón de Consulta Válida */}
+            {/* ESCENARIO B: Botón independiente para consulta válida */}
             <Pressable
               style={({ pressed }) => [
                 styles.actionButton,
@@ -232,14 +240,14 @@ export default function HomeScreen() {
               ]}
               onPress={handleLoadSuccess}
               accessibilityRole="button"
-              accessibilityLabel="Consultar avisos académicos válidos"
+              accessibilityLabel="Escenario B: Consultar avisos válidos HTTP 200"
             >
               <Text style={styles.successButtonText}>
-                📥 Consultar Avisos (200 OK)
+                📥 Escenario B: Recuperación (HTTP 200)
               </Text>
             </Pressable>
 
-            {/* Botón de Simulación de Error */}
+            {/* ESCENARIO A: Botón de simulación de fallo controlado */}
             <Pressable
               style={({ pressed }) => [
                 styles.actionButton,
@@ -248,29 +256,82 @@ export default function HomeScreen() {
               ]}
               onPress={handleSimulateError}
               accessibilityRole="button"
-              accessibilityLabel="Simular error HTTP 404 en endpoint inexistente"
+              accessibilityLabel="Escenario A: Provocar fallo controlado HTTP 404"
             >
               <Text style={styles.errorButtonText}>
-                🧪 Simular Error (HTTP 404)
+                🧪 Escenario A: Fallo Controlado (HTTP 404)
               </Text>
             </Pressable>
           </View>
 
-          {/* Información del endpoint activo y métricas de error */}
+          {/* Información del endpoint activo y auditoría de logs */}
           <View style={styles.metaRow}>
             <View style={styles.endpointInfoBox}>
-              <Text style={styles.endpointLabel}>Endpoint Activo:</Text>
+              <Text style={styles.endpointLabel}>
+                {activeEndpoint === API_CONFIG.ENDPOINTS.INVALID_TEST
+                  ? '⚠️ Endpoint Activo (Escenario A - Fallo):'
+                  : '✅ Endpoint Activo (Escenario B - Válido):'}
+              </Text>
               <Text style={styles.endpointValue} numberOfLines={1}>
                 {activeEndpoint}
               </Text>
             </View>
-            <View style={styles.logsAuditBadge}>
-              <Text style={styles.logsAuditLabel}>Logs Locales:</Text>
-              <Text style={styles.logsAuditCount}>
-                {errorLogCount} {errorLogCount === 1 ? 'error' : 'errores'}
-              </Text>
+
+            <View style={styles.logsAuditRow}>
+              <Pressable
+                style={styles.logsToggleBtn}
+                onPress={() => setShowLogsViewer(!showLogsViewer)}
+              >
+                <Text style={styles.logsToggleText}>
+                  📋 {showLogsViewer ? 'Ocultar auditoría' : 'Ver auditoría de logs'}{' '}
+                  ({logsList.length})
+                </Text>
+              </Pressable>
+
+              {logsList.length > 0 && (
+                <Pressable
+                  style={styles.clearLogsBtn}
+                  onPress={handleClearLogs}
+                >
+                  <Text style={styles.clearLogsText}>Limpiar logs</Text>
+                </Pressable>
+              )}
             </View>
           </View>
+
+          {/* Visor desplegable de auditoría de registros de error locales */}
+          {showLogsViewer && (
+            <View style={styles.logsViewerContainer}>
+              <Text style={styles.logsViewerTitle}>
+                Historial Local de Error Logging (Sin PII / Datos Personales):
+              </Text>
+              {logsList.length === 0 ? (
+                <Text style={styles.logsViewerEmpty}>
+                  No hay registros de error en esta sesión.
+                </Text>
+              ) : (
+                logsList.map((log) => (
+                  <View key={log.id} style={styles.logItem}>
+                    <View style={styles.logItemHeader}>
+                      <Text style={styles.logTypeBadge}>[{log.errorType}]</Text>
+                      <Text style={styles.logStatusCode}>
+                        HTTP {log.statusCode ?? 'N/A'}
+                      </Text>
+                      <Text style={styles.logTimestamp}>
+                        {new Date(log.timestamp).toLocaleTimeString()}
+                      </Text>
+                    </View>
+                    <Text style={styles.logTechnicalMsg}>
+                      {log.technicalMessage}
+                    </Text>
+                    <Text style={styles.logContext}>
+                      Contexto: {log.context}
+                    </Text>
+                  </View>
+                ))
+              )}
+            </View>
+          )}
         </View>
 
         {/* Sección Principal de Contenido (Avisos / Carga / Error) */}
@@ -503,24 +564,92 @@ const styles = StyleSheet.create({
     color: '#0284C7',
     fontFamily: 'monospace',
   },
-  logsAuditBadge: {
+  logsAuditRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#F1F5F9',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 2,
+    marginTop: 4,
   },
-  logsAuditLabel: {
-    fontSize: 11,
+  logsToggleBtn: {
+    paddingVertical: 4,
+  },
+  logsToggleText: {
+    fontSize: 12,
+    color: '#2563EB',
     fontWeight: '600',
-    color: '#64748B',
   },
-  logsAuditCount: {
+  clearLogsBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  clearLogsText: {
+    fontSize: 11,
+    color: '#94A3B8',
+    fontWeight: '500',
+  },
+  logsViewerContainer: {
+    marginTop: 10,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  logsViewerTitle: {
     fontSize: 11,
     fontWeight: '700',
     color: '#334155',
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  logsViewerEmpty: {
+    fontSize: 12,
+    color: '#94A3B8',
+    fontStyle: 'italic',
+  },
+  logItem: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 6,
+    padding: 8,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  logItemHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
+  logTypeBadge: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#DC2626',
+  },
+  logStatusCode: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#475569',
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  logTimestamp: {
+    fontSize: 10,
+    color: '#94A3B8',
+    marginLeft: 'auto',
+  },
+  logTechnicalMsg: {
+    fontSize: 11,
+    color: '#1E293B',
+    fontFamily: 'monospace',
+  },
+  logContext: {
+    fontSize: 10,
+    color: '#64748B',
+    marginTop: 2,
   },
   contentSection: {
     marginTop: 16,
